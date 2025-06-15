@@ -10,10 +10,11 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
+  "type": "module",
   "dependencies": {
-    "deepspeech": "^0.9.3",
-    "libsamplerate.js": "^1.0.0",
+    "@alexanderolsen/libsamplerate-js": "^2.1.2",
+    "@xenova/transformers": "^2.17.2",
+    "onnxruntime-node": "^1.22.0-rev",
     "ws": "^8.18.2"
   }
 }

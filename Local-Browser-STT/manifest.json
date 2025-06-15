@@ -2,17 +2,12 @@
   "manifest_version": 3,
   "name": "Audio Transcriber",
   "version": "1.0",
-  "permissions": ["tabCapture", "activeTab"],
+  "permissions": ["tabCapture", "activeTab", "offscreen", "scripting"],
   "background": {
     "service_worker": "background.js"
   },
   "action": {
     "default_popup": "popup.html"
   },
-  "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["content.js"]
-    }
-  ]
+  "host_permissions": ["http://*/*", "https://*/*"]
 }

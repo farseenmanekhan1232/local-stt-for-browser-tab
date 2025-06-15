@@ -1,82 +1,95 @@
-const WebSocket = require("ws");
-const DeepSpeech = require("deepspeech");
-const libsamplerate = require("libsamplerate.js");
+import { pipeline } from "@xenova/transformers";
+import { WebSocketServer } from "ws";
+// --- THE FINAL FIX ---
+// The default import is an object containing the library's exports.
+// We import the whole object and then access the .create function from it.
+import sampleRateConverter from "@alexanderolsen/libsamplerate-js";
 
-const modelPath = "./models/deepspeech-0.9.3-models.pbmm";
-const scorerPath = "./models/deepspeech-0.9.3-models.scorer";
-const model = new DeepSpeech.Model(modelPath);
-model.enableExternalScorer(scorerPath);
+// --- TRANSFORMERS.JS (WHISPER) SETUP ---
+// This will download the model on the first run.
+console.log("Loading speech-to-text model... This may take a moment.");
+const transcriber = await pipeline(
+  "automatic-speech-recognition",
+  "Xenova/whisper-small"
+);
+console.log("Model loaded successfully.");
+// --- END SETUP ---
 
-const server = new WebSocket.Server({ port: 8080 });
+const server = new WebSocketServer({ port: 8080 });
+console.log("WebSocket server running on ws://localhost:8080");
 
 server.on("connection", (ws) => {
-  let sampleRate;
-  let sttStream;
+  console.log("SERVER: New client connected.");
+  let resampler = null;
 
-  ws.on("message", (message) => {
-    if (typeof message === "string") {
-      const data = JSON.parse(message);
-      if (data.type === "start") {
-        sampleRate = data.sampleRate;
-        sttStream = model.createStream();
-        console.log(`Started transcription with sample rate: ${sampleRate} Hz`);
-      } else if (data.type === "stop") {
-        if (sttStream) {
-          const transcription = sttStream.finishStream();
-          console.log("Final transcription:", transcription);
+  ws.on("message", async (message) => {
+    let command;
+    try {
+      command = JSON.parse(message.toString());
+    } catch (e) {
+      /* Not a command, must be audio */
+    }
+
+    if (command && command.type === "start") {
+      const sampleRate = command.sampleRate;
+      console.log(
+        `SERVER: Start command received. Input sample rate: ${sampleRate} Hz`
+      );
+
+      if (sampleRate !== 16000) {
+        try {
+          // This call will now work correctly by accessing the 'create' property.
+          resampler = await sampleRateConverter.create(1, sampleRate, 16000);
+          console.log("SERVER: Audio resampler created.");
+        } catch (e) {
+          console.error("SERVER: Error creating resampler:", e);
+          resampler = null;
+        }
+      }
+    } else if (command && command.type === "stop") {
+      console.log("SERVER: Stop command received.");
+    } else {
+      // This block handles the binary audio data.
+      try {
+        const int16Array = new Int16Array(
+          message.buffer,
+          message.byteOffset,
+          message.byteLength / 2
+        );
+        let floatArray = new Float32Array(int16Array.length);
+        for (let i = 0; i < int16Array.length; i++) {
+          floatArray[i] = int16Array[i] / 32768;
+        }
+
+        // Resample if necessary
+        if (resampler) {
+          floatArray = resampler.full(floatArray);
+        }
+
+        // Transcribe the audio
+        const output = await transcriber(floatArray, {
+          chunk_length_s: 30,
+          stride_length_s: 5,
+        });
+
+        const transcription = output.text;
+        if (transcription) {
+          console.log(`SERVER: Sending transcription: "${transcription}"`);
           ws.send(
             JSON.stringify({ type: "transcription", text: transcription })
           );
-          sttStream = null;
         }
-      }
-    } else {
-      const int16Array = new Int16Array(
-        message.buffer,
-        message.byteOffset,
-        message.byteLength / 2
-      );
-      const floatArray = new Float32Array(int16Array.length);
-      for (let i = 0; i < int16Array.length; i++) {
-        floatArray[i] = int16Array[i] / 32768;
-      }
-      const resampledFloat = libsamplerate.resample(
-        floatArray,
-        sampleRate,
-        16000,
-        1
-      );
-      const resampledInt16 = floatToInt16(resampledFloat);
-      const buffer = Buffer.from(resampledInt16.buffer);
-      if (sttStream) {
-        sttStream.feedAudioContent(buffer);
-        const interim = sttStream.intermediateDecode();
-        if (interim) {
-          console.log("Interim transcription:", interim);
-          ws.send(JSON.stringify({ type: "transcription", text: interim }));
-        }
+      } catch (error) {
+        console.error("SERVER: CRITICAL ERROR during audio processing:", error);
       }
     }
   });
 
   ws.on("close", () => {
-    if (sttStream) {
-      const transcription = sttStream.finishStream();
-      console.log("Connection closed. Final transcription:", transcription);
-      sttStream = null;
+    console.log("SERVER: Client disconnected.");
+    if (resampler) {
+      resampler.destroy();
+      resampler = null;
     }
   });
 });
-
-function floatToInt16(floatArray) {
-  const int16Array = new Int16Array(floatArray.length);
-  for (let i = 0; i < floatArray.length; i++) {
-    int16Array[i] = Math.max(
-      -32768,
-      Math.min(32767, Math.round(floatArray[i] * 32768))
-    );
-  }
-  return int16Array;
-}
-
-console.log("WebSocket server running on ws://localhost:8080");
